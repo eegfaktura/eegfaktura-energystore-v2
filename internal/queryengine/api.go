@@ -82,6 +82,7 @@ func (e *Engine) QuerySummaryReport(ctx context.Context, tenant, ec string,
 func (e *Engine) QueryRawData(ctx context.Context, tenant, ec string,
 	start, end time.Time, cps []TargetMP,
 	params map[string][]string) (map[string]*RawDataResult, error) {
+	cps = dedupTargets(cps)
 	var fn QueryFunction
 	if vs, ok := params["f"]; ok && len(vs) > 0 {
 		name, args, err := ParseRawFunction(vs[0])
@@ -115,6 +116,26 @@ func (e *Engine) QueryRawData(ctx context.Context, tenant, ec string,
 		return r.GetResult(), nil
 	}
 	return nil, errors.New("queryengine: function does not produce per-MP results")
+}
+
+// dedupTargets removes duplicate metering points from the target list,
+// keeping the first occurrence and preserving order. The store holds exactly
+// one series per metering-point name, so a caller that lists the same ZP more
+// than once — e.g. a metering point re-registered under a new member while the
+// old, overlapping participant row is still listed — would otherwise get that
+// ZP's identical series appended once per duplicate entry (ParentFunction) or
+// double-counted (Aggregate). Mirrors the v1 store.dedupTargets fix.
+func dedupTargets(cps []TargetMP) []TargetMP {
+	seen := make(map[string]struct{}, len(cps))
+	out := make([]TargetMP, 0, len(cps))
+	for _, cp := range cps {
+		if _, ok := seen[cp.MeteringPoint]; ok {
+			continue
+		}
+		seen[cp.MeteringPoint] = struct{}{}
+		out = append(out, cp)
+	}
+	return out
 }
 
 // QueryMetaData mirrors v1 store.QueryMetaData. PeriodBegin/End come from
