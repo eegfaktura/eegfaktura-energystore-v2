@@ -34,11 +34,30 @@ type IntermediateRecord struct {
 	Production  []float64 `json:"production"`
 }
 
+// TimeWindow is a generic time-of-use window (wall-clock, 15-min raster).
+// From is inclusive, To exclusive; From > To means the window crosses
+// midnight. energystore has no tariff/price knowledge - windows are plain
+// daytime ranges. Wire shape shared with v1.
+type TimeWindow struct {
+	Key  string `json:"key"`  // "T1" | "T2"
+	From string `json:"from"` // "HH:MM"
+	To   string `json:"to"`   // "HH:MM"
+}
+
+// Bucket is the per-window energy sum of the billing quantity of one meter.
+// BASE is the residual (period total minus all window sums), so the kWh
+// partition is exact by construction. Wire shape shared with v1.
+type Bucket struct {
+	Key string  `json:"key"` // "BASE" | "T1" | "T2"
+	KWh float64 `json:"kWh"`
+}
+
 // Report bundles summary + intermediate.
 type Report struct {
 	ID           string             `json:"id"`
 	Summary      Recort             `json:"summary"`
 	Intermediate IntermediateRecord `json:"intermediate"`
+	Buckets      []Bucket           `json:"buckets,omitempty"`
 }
 
 // RoundToFixed quantises Summary; Intermediate slices are quantised
@@ -49,11 +68,12 @@ func (rp *Report) RoundToFixed(precision uint) {
 
 // MeterReport mirrors v1 wire shape exactly.
 type MeterReport struct {
-	MeterID  string  `json:"meterId"`
-	MeterDir string  `json:"meterDir"`
-	From     int64   `json:"from"`
-	Until    int64   `json:"until"`
-	Report   *Report `json:"report"`
+	MeterID     string       `json:"meterId"`
+	MeterDir    string       `json:"meterDir"`
+	From        int64        `json:"from"`
+	Until       int64        `json:"until"`
+	TimeWindows []TimeWindow `json:"timeWindows,omitempty"`
+	Report      *Report      `json:"report"`
 }
 
 // SetReport mirrors v1.

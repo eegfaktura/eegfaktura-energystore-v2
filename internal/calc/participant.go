@@ -1,6 +1,7 @@
 package calc
 
 import (
+	"sort"
 	"time"
 
 	"github.com/gemeinstrom/eegfaktura-energystore-v2/internal/counterpoint"
@@ -23,12 +24,20 @@ type participantConsumer struct {
 	daySummary *calcResults
 	currentDay time.Time
 	dayInit    bool
+
+	// ZVT time-of-use folding (see timewindows.go)
+	windows       []timeWindowRange
+	dayWindowSums map[string]*calcResults
+	bucketSums    map[*MeterReport]map[string]float64
 }
 
 func (p *participantConsumer) HandleStart(ctx *queryengine.EngineContext) error {
 	p.info = ctx.Info
 	p.daySummary = newCalcResult(ctx.Info)
 	p.currentDay = p.startDate
+	p.windows = distinctWindowRanges(p.report)
+	p.dayWindowSums = map[string]*calcResults{}
+	p.bucketSums = map[*MeterReport]map[string]float64{}
 	return nil
 }
 
@@ -48,8 +57,29 @@ func (p *participantConsumer) HandleLine(_ *queryengine.EngineContext, line *que
 			return err
 		}
 		p.daySummary = newCalcResult(p.info)
+		p.dayWindowSums = map[string]*calcResults{}
 		p.currentDay = ts
 	}
+
+	// ZVT: fold the quarter-hour into every matching time-of-use window.
+	// Membership compares against the wall-clock HH:MM encoded in the row
+	// id (local Vienna time, see timewindows.go).
+	if len(p.windows) > 0 {
+		minuteOfDay := ts.Hour()*60 + ts.Minute()
+		for _, w := range p.windows {
+			if w.contains(minuteOfDay) {
+				ws, ok := p.dayWindowSums[w.rangeKey]
+				if !ok {
+					ws = newCalcResult(p.info)
+					p.dayWindowSums[w.rangeKey] = ws
+				}
+				if err := appendResults(line, p.alloc, ws); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
 	return appendResults(line, p.alloc, p.daySummary)
 }
 
@@ -63,10 +93,36 @@ func (p *participantConsumer) HandleEnd(_ *queryengine.EngineContext) error {
 		for _, m := range pr.Meters {
 			if m.Report != nil {
 				m.Report.RoundToFixed(6)
+				p.buildBuckets(m)
 			}
 		}
 	}
 	return nil
+}
+
+// buildBuckets writes the final buckets of one meter: T1/T2 as summed window
+// quantities, BASE as the residual against the (rounded) period total - the
+// kWh partition is exact by construction (v1 parity).
+func (p *participantConsumer) buildBuckets(m *MeterReport) {
+	if len(m.TimeWindows) == 0 || m.Report == nil {
+		return
+	}
+	total := m.Report.Summary.Utilization
+	if cp, ok := p.cpMap[m.MeterID]; ok && cp.Direction == counterpoint.DirectionProducer {
+		total = m.Report.Summary.Production - m.Report.Summary.Allocation
+	}
+	windows := append([]TimeWindow{}, m.TimeWindows...)
+	sort.Slice(windows, func(i, j int) bool { return windows[i].Key < windows[j].Key })
+
+	buckets := make([]Bucket, 0, len(windows)+1)
+	windowTotal := float64(0)
+	for _, tw := range windows {
+		kwh := RoundFixed(p.bucketSums[m][tw.Key], 6)
+		windowTotal += kwh
+		buckets = append(buckets, Bucket{Key: tw.Key, KWh: kwh})
+	}
+	base := RoundFixed(total-windowTotal, 6)
+	m.Report.Buckets = append([]Bucket{{Key: "BASE", KWh: base}}, buckets...)
 }
 
 func (p *participantConsumer) flushDay(day time.Time) error {
@@ -118,10 +174,39 @@ func (p *participantConsumer) flushDay(day time.Time) error {
 					p.report.TotalProduction += values[0]
 					p.appendIntermediate(m, values, cp.Direction, day)
 				}
+				p.appendBuckets(m, cp, day)
 			}
 		}
 	}
 	return nil
+}
+
+// appendBuckets adds the per-window sums of the flushed day to the running
+// bucket totals of one meter (v1 appendBucketsToParticipantMeter parity).
+// Same day-level from/until gating as the surrounding flushDay loop.
+func (p *participantConsumer) appendBuckets(m *MeterReport, cp *counterpoint.CounterPoint, day time.Time) {
+	if len(m.TimeWindows) == 0 || len(p.dayWindowSums) == 0 {
+		return
+	}
+	sums, ok := p.bucketSums[m]
+	if !ok {
+		sums = map[string]float64{}
+		p.bucketSums[m] = sums
+	}
+	for _, tw := range m.TimeWindows {
+		ws, ok := p.dayWindowSums[tw.From+"-"+tw.To]
+		if !ok {
+			continue
+		}
+		switch cp.Direction {
+		case counterpoint.DirectionConsumer:
+			// billing quantity of a consumer is the utilization
+			sums[tw.Key] += ws.rAlloc.RoundToFixed(6).GetElm(cp.SourceIdx, 0)
+		case counterpoint.DirectionProducer:
+			// billing quantity of a producer is production - allocation
+			sums[tw.Key] += ws.rProd.GetElm(cp.SourceIdx, 0) - ws.rDist.GetElm(cp.SourceIdx, 0)
+		}
+	}
 }
 
 func (p *participantConsumer) appendIntermediate(m *MeterReport, values []float64,

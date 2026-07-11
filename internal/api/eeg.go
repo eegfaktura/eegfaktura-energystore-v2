@@ -66,6 +66,10 @@ func (s *Server) handleEnergyReportV2(w http.ResponseWriter, r *http.Request, _ 
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := calc.ValidateTimeWindows(req.Participants); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	resp := &calc.ReportResponse{ParticipantReports: req.Participants}
 	if err := s.calc.EnergyReportV2(r.Context(), tenant, ecid,
 		req.ReportInterval.Year, req.ReportInterval.Segment, req.ReportInterval.Period, resp); err != nil {
