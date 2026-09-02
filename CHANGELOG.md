@@ -9,6 +9,12 @@ operations.
 
 ## [Unreleased]
 
+### Security
+- `github.com/xuri/excelize/v2` 2.10.1 -> 2.11.0, closing CVE-2026-54063 (CVSS 7.5).
+  The library backs both the XLSX import and the Excel export, so it processes files
+  supplied from outside. Full test suite green, including `internal/xlsximport` and
+  `internal/excelexport`. The `go` directive is unchanged.
+
 ### Fixed
 - Raw-data query returned each timestamp multiple times for a re-registered
   metering point (same root cause as v1). When a metering point was
