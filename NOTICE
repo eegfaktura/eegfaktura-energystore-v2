@@ -1,42 +1,42 @@
-gemeinstrom/eegfaktura-energystore-v2
-======================================
+eegfaktura-energystore-v2
+=========================
 
-This repository is a re-implementation of the energystore component of the
-eegfaktura platform. It addresses the performance and scalability limitations
-of the embedded BadgerDB-backed v1 (https://github.com/gemeinstrom/eegfaktura-energystore)
-by moving the time-series storage to TimescaleDB, enabling multi-replica
-deployments and orders-of-magnitude reductions in per-message data movement.
+Time-series storage and ingest service for the eegfaktura suite: a
+re-implementation of the energystore component
+(https://github.com/eegfaktura/eegfaktura-energystore) on TimescaleDB.
 
-The component runs alongside, not as a replacement of, v1 — clusters opt into
-v2 by Helm-values selection (one variant per cluster).
+Part of the eegfaktura suite (https://github.com/eegfaktura), an open-source
+billing and management platform for Austrian renewable energy communities
+(Erneuerbare-Energiegemeinschaften, EEG), published by VFEEG - Verein zur
+Förderung von Erneuerbaren Energiegemeinschaften.
 
 
 License
 -------
 
-Both this repository and the upstream eegfaktura repositories are distributed
-under the **GNU Affero General Public License, version 3.0 (AGPL-3.0)**.
-See [LICENSE](LICENSE) for the full license text.
+Licensed under the GNU Affero General Public License, version 3 (AGPL-3.0).
+See LICENSE for the full text.
+
+Copyright in individual contributions remains with their respective authors.
+The Git history of this repository records who contributed what.
 
 
-Attribution
------------
+Origin
+------
 
-The eegfaktura software suite is an Austrian platform for Renewable Energy
-Communities ("Erneuerbare Energiegemeinschaften", EEG). Copyright in
-individual contributions remains with their respective authors.
+This repository is a GitHub fork of
+https://github.com/gemeinstrom/eegfaktura-energystore-v2. Its Git history
+begins with a commit by Matthias Martetschläger on 2026-06-06.
 
-Upstream maintainers and primary contributors of the original energystore
-component include:
-  - VFEEG — Verein zur Förderung von Erneuerbaren Energiegemeinschaften
-  - obpeter (https://github.com/obpeter)
+Main authors according to `git shortlog -sn` (as of 2026-10-04):
+  - Matthias Martetschläger (Marki4711)
+
+The complete list of contributors is in the Git history.
 
 
-AGPL §13 (Network Use)
-----------------------
+AGPL-3.0 section 13 (remote network interaction)
+------------------------------------------------
 
-If you deploy this software as a network service, you must offer all users
-interacting with it remotely the corresponding source code under AGPL-3.0.
-The reference deployment of the eegfaktura platform fulfills this obligation
-by linking to the source repositories from the customer-facing web UI footer
-and from /about.
+If you modify this software and let users interact with it remotely over a
+computer network, section 13 of the AGPL-3.0 requires you to offer those users
+the Corresponding Source of your modified version.
