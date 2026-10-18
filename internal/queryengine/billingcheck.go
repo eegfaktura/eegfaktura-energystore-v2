@@ -169,7 +169,10 @@ func (e *Engine) QueryBillingCheck(ctx context.Context, tenant, ec string, req *
 			d := time.UnixMilli(cp.InactiveSince)
 			to = time.Date(d.Year(), d.Month(), d.Day(), 23, 59, 59, 0, time.Local) // end of the inactive day
 		}
-		entries[p] = append(entries[p], bcEntry{idx: i, from: time.UnixMilli(cp.ActiveSince), to: to})
+		// the whole activation day counts, whatever time of day the caller sent
+		a := time.UnixMilli(cp.ActiveSince)
+		from := time.Date(a.Year(), a.Month(), a.Day(), 0, 0, 0, 0, time.Local)
+		entries[p] = append(entries[p], bcEntry{idx: i, from: from, to: to})
 		present[i] = make([]int16, lastDay+1)
 	}
 
@@ -278,7 +281,12 @@ func (res *BillingCheckResponse) addSlot(dir counterpoint.Direction, cells *[3]b
 
 // countMissing compares, per entry and local day of its active part of the period, the quarter hours
 // with a value with the real quarter hours of the day. Entries never matched count as all missing.
+// An entry without any value gets the count but no day list (the caller shows "no data").
 func (res *BillingCheckResponse) countMissing(req *BillingCheckRequest, periodStart time.Time, lastDay int, present [][]int16) {
+	expectedPerDay := make([]int, lastDay+1)
+	for d := range expectedPerDay {
+		expectedPerDay[d] = quarterHoursOnDay(periodStart.AddDate(0, 0, d))
+	}
 	for i, cp := range req.Cps {
 		from, to := 0, lastDay
 		if cp.ActiveSince > 0 {
@@ -289,14 +297,15 @@ func (res *BillingCheckResponse) countMissing(req *BillingCheckRequest, periodSt
 		}
 		m := &res.Meters[i]
 		for d := from; d <= to; d++ {
-			day := periodStart.AddDate(0, 0, d)
-			expected, got := quarterHoursOnDay(day), 0
+			expected, got := expectedPerDay[d], 0
 			if present[i] != nil {
 				got = int(present[i][d])
 			}
 			if got < expected {
 				m.MissingCount += expected - got
-				m.MissingDays = append(m.MissingDays, day.Format("2006-01-02"))
+				if m.FirstData != nil {
+					m.MissingDays = append(m.MissingDays, periodStart.AddDate(0, 0, d).Format("2006-01-02"))
+				}
 			}
 		}
 	}

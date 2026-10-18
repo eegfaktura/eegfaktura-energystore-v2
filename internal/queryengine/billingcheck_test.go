@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	_ "time/tzdata"
+
 	"github.com/pashagolub/pgxmock/v4"
 
 	"github.com/gemeinstrom/eegfaktura-energystore-v2/internal/counterpoint"
@@ -225,6 +227,17 @@ func dayRows(mock pgxmock.PgxPoolIface, day time.Time, skip int) *pgxmock.Rows {
 }
 
 func TestBillingCheck_MissingQuarterHours(t *testing.T) {
+	// clock change days in Europe/Vienna also where the machine runs in UTC (CI)
+	loc, err := time.LoadLocation("Europe/Vienna")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Local
+	time.Local = loc
+	t.Cleanup(func() { time.Local = old })
+	if quarterHoursOnDay(time.Date(2026, 10, 25, 0, 0, 0, 0, time.Local)) != 100 {
+		t.Fatal("25.10.2026 must have 100 quarter hours in Vienna")
+	}
 	for _, tc := range []struct {
 		day     time.Time
 		skip    int
@@ -249,7 +262,7 @@ func TestBillingCheck_MissingQuarterHours(t *testing.T) {
 		if m := res.Meters[0]; m.MissingCount != tc.missing || (tc.missing > 0) != (len(m.MissingDays) == 1) {
 			t.Errorf("%s: missing %d %v, want %d", day, m.MissingCount, m.MissingDays, tc.missing)
 		}
-		if m := res.Meters[1]; m.MissingCount != quarterHoursOnDay(tc.day) || len(m.MissingDays) != 1 || m.MissingDays[0] != day {
+		if m := res.Meters[1]; m.MissingCount != quarterHoursOnDay(tc.day) || len(m.MissingDays) != 0 {
 			t.Errorf("%s: unknown metering point missing %d %v", day, m.MissingCount, m.MissingDays)
 		}
 		mock.Close()
