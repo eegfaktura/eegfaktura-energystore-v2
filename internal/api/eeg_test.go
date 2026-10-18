@@ -136,3 +136,31 @@ func TestEEG_LastRecordDate_NoMeta(t *testing.T) {
 		t.Fatalf("expected 404, got %d", rec.Code)
 	}
 }
+
+func TestEEG_BillingCheck_InvalidRequest(t *testing.T) {
+	srv, _ := newFullServer(t)
+	for _, body := range []string{`{`, `{"start":0,"end":1}`, `{"start":1,"end":2,"cps":[{"meteringPoint":"AT1","direction":"IN"}]}`} {
+		req := httptest.NewRequest(http.MethodPost, "/eeg/v2/TE100200/billing-check", strings.NewReader(body))
+		req.Header.Set("X-Tenant", "vfeeg")
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: expected 400, got %d", body, rec.Code)
+		}
+	}
+}
+
+func TestEEG_BillingCheck_EmptyCps(t *testing.T) {
+	srv, mock := newFullServer(t)
+	mock.ExpectQuery(`FROM counterpoint_meta`).WithArgs("vfeeg", "TE100200").
+		WillReturnRows(mock.NewRows([]string{"tenant_id", "ec_id", "metering_point", "direction", "source_idx",
+			"period_start", "period_end", "payload", "updated_at"}))
+	req := httptest.NewRequest(http.MethodPost, "/eeg/v2/TE100200/billing-check",
+		strings.NewReader(`{"start":1767222000000,"end":1769814000000,"cps":[]}`))
+	req.Header.Set("X-Tenant", "vfeeg")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"meters":[]`) {
+		t.Fatalf("expected 200 with no meters, got %d %s", rec.Code, rec.Body.String())
+	}
+}
