@@ -63,7 +63,7 @@ func TestBillingCheck_L3(t *testing.T) {
 		AddRow(bcAt(11, 9, 0), bcCons, "1-1:1.9.0 G.01", 1.0, int16(2)).
 		// L3 of the producer
 		AddRow(bcAt(12, 10, 0), bcProd, "1-1:2.9.0 P.01", 0.3, int16(3)).
-		// a T variant overrides the plain code (last write wins, like the wide lines)
+		// an L3 in one code variant is not hidden by another; the value is taken once
 		AddRow(bcAt(13, 10, 0), bcCons, "1-1:1.9.0 G.01", 1.0, int16(3)).
 		AddRow(bcAt(13, 10, 0), bcCons, "1-1:1.9.0 G.01T", 1.0, int16(1)))
 
@@ -75,8 +75,8 @@ func TestBillingCheck_L3(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m := res.Meters[0]; m.L3Count != 2 || len(m.L3Days) != 1 || m.L3Days[0] != "2026-02-10" {
-		t.Errorf("consumer: got %d %v, want 2 [2026-02-10]", m.L3Count, m.L3Days)
+	if m := res.Meters[0]; m.L3Count != 3 || len(m.L3Days) != 2 || m.L3Days[0] != "2026-02-10" || m.L3Days[1] != "2026-02-13" {
+		t.Errorf("consumer: got %d %v, want 3 [2026-02-10 2026-02-13]", m.L3Count, m.L3Days)
 	}
 	if m := res.Meters[1]; m.L3Count != 0 || len(m.L3Days) != 0 {
 		t.Errorf("L3 before activation counted: %d %v", m.L3Count, m.L3Days)
@@ -84,8 +84,10 @@ func TestBillingCheck_L3(t *testing.T) {
 	if m := res.Meters[2]; m.L3Count != 1 || m.L3Days[0] != "2026-02-12" {
 		t.Errorf("producer: got %d %v", m.L3Count, m.L3Days)
 	}
-	if res.Totals.Consumed != 4.0 {
-		t.Errorf("consumed %v, want 4 (T variant replaces the plain code)", res.Totals.Consumed)
+	// all metering points count, also the second consumer before its activation; the T variant
+	// replaces the plain code
+	if res.Totals.Consumed != 5.0 {
+		t.Errorf("consumed %v, want 5", res.Totals.Consumed)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Error(err)
@@ -143,24 +145,30 @@ func TestBillingCheck_CoverageAndTotals(t *testing.T) {
 	if res.Meters[4].InactiveSince != bcDay(9).UnixMilli() {
 		t.Error("request values are echoed")
 	}
-	// consumed: entry 0 (3 rows), entry 1 (2 values), entry 4 (first + 09.02.)
+	// totals over all rows of the community, not per requested entry: the earlier owner does not
+	// double them
 	tot := res.Totals
-	if tot.Consumed != 7.0 || tot.Allocated != 1.0 || tot.SelfCovered != 0.8 || tot.Produced != 2.0 || tot.Surplus != 0.3 {
+	if tot.Consumed != 5.0 || tot.Allocated != 0.5 || tot.SelfCovered != 0.4 || tot.Produced != 2.0 || tot.Surplus != 0.3 {
 		t.Errorf("totals %+v", tot)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
 	}
 }
 
-func TestBillingCheck_NoMatchingCounterpointSkipsQuery(t *testing.T) {
+func TestBillingCheck_UnknownMeteringPointKeepsCommunityTotals(t *testing.T) {
 	eng, mock := newMockEngine(t)
 	defer mock.Close()
 	bcMeta(mock)
+	expectBillingSlots(mock, slotRows(mock).
+		AddRow(bcAt(2, 0, 0), bcCons, "1-1:1.9.0 G.01", 1.0, int16(1)))
 
 	res, err := eng.QueryBillingCheck(context.Background(), "vfeeg", "TE100200",
 		bcRequest(bcConsumer("AT0030000000000000000000000000099", 0, 0)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Meters) != 1 || res.Meters[0].FirstData != nil || res.Totals != (BillingCheckTotals{}) {
+	if len(res.Meters) != 1 || res.Meters[0].FirstData != nil || res.Totals.Consumed != 1.0 {
 		t.Errorf("unexpected %+v", res)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -179,6 +187,7 @@ func TestBillingCheckRequestValidate(t *testing.T) {
 		"end before start":  {Start: endOfYear, End: start},
 		"longer than year":  {Start: start, End: start + 400*24*3600*1000},
 		"huge end":          {Start: start, End: 1 << 62},
+		"far future":        {Start: 1 << 62, End: 1 << 62},
 		"metering point":    {Start: start, End: start, Cps: []BillingCheckCp{{Direction: consumerDirection}}},
 		"invalid direction": {Start: start, End: start, Cps: []BillingCheckCp{{MeteringPoint: "AT003", Direction: "IN"}}},
 		"too many":          {Start: start, End: start, Cps: make([]BillingCheckCp, billingCheckMaxCps+1)},

@@ -132,6 +132,7 @@ func (s *Server) handleBillingCheck(w http.ResponseWriter, r *http.Request, _ *a
 		return
 	}
 	ecid := r.PathValue("ecid")
+	r.Body = http.MaxBytesReader(w, r.Body, queryengine.BillingCheckMaxBody)
 	var req queryengine.BillingCheckRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
