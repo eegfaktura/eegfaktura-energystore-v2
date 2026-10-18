@@ -20,6 +20,7 @@ func (s *Server) eegRoutes() {
 	s.handle("POST /eeg/v2/{ecid}/intradayreport", s.protect(s.handleIntraDayReport))
 	s.handle("POST /eeg/v2/{ecid}/intra-day-report", s.protect(s.handleIntraDayReport))
 	s.handle("POST /eeg/v2/{ecid}/summary", s.protect(s.handleSummary))
+	s.handle("POST /eeg/v2/{ecid}/billing-check", s.protect(s.handleBillingCheck))
 	s.handle("POST /eeg/v2/{ecid}/load-curve-report", s.protect(s.handleLoadCurveReport))
 	s.handle("POST /eeg/v2/{ecid}/combined-report", s.protect(s.handleCombinedReport))
 	s.handle("POST /eeg/v2/{ecid}/raw", s.protect(s.handleRawV2))
@@ -122,6 +123,32 @@ func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request, _ *auth.P
 	// v1 wraps in a 1-element array to match prod-image shape (the
 	// customer-web SPA at energy.service.ts:146 does res[0]).
 	writeJSON(w, http.StatusOK, []*queryengine.ReportData{resp})
+}
+
+// handleBillingCheck returns the data checks before a billing run (platform#148), v1 parity. Read only.
+func (s *Server) handleBillingCheck(w http.ResponseWriter, r *http.Request, _ *auth.PlatformClaims, tenant string) {
+	if s.qe == nil {
+		writeError(w, http.StatusServiceUnavailable, "query engine not configured")
+		return
+	}
+	ecid := r.PathValue("ecid")
+	r.Body = http.MaxBytesReader(w, r.Body, queryengine.BillingCheckMaxBody)
+	var req queryengine.BillingCheckRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := req.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	resp, err := s.qe.QueryBillingCheck(r.Context(), tenant, ecid, &req)
+	if err != nil {
+		s.logger.Error("BillingCheck", "err", err, "tenant", tenant)
+		writeError(w, http.StatusInternalServerError, "billing check failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleLoadCurveReport(w http.ResponseWriter, r *http.Request, _ *auth.PlatformClaims, tenant string) {

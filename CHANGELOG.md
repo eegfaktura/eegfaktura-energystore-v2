@@ -9,6 +9,15 @@ operations.
 
 ## [Unreleased]
 
+### Added
+- **`POST /eeg/v2/{ecid}/billing-check`**, same request and response as energystore v1 (platform#148):
+  L3 quarter hours with days, first/last quarter hour with a value and the missing quarter hours with
+  their days (real quarter hours of the local day: 92/96/100) per requested entry, totals of all
+  metering points of the community. Evaluated on the raw rows of `energy_data`, not on the aggregates
+  (their `MIN(qov)` hides L3); a cell without a row counts as L0, as in v1. An L3 in one OBIS variant
+  (e.g. G.01 vs. G.01T) counts even if the other variant is L1. Known difference to v1: on the autumn
+  clock change v2 keeps both 02:00–02:45 hours. No schema change.
+
 ### Security
 - `github.com/xuri/excelize/v2` 2.10.1 -> 2.11.0, closing CVE-2026-54063 (CVSS 7.5).
   The library backs both the XLSX import and the Excel export, so it processes files
