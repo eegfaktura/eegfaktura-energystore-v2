@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/gemeinstrom/eegfaktura-energystore-v2/internal/counterpoint"
@@ -17,7 +18,7 @@ import (
 // Sums take one value per OBIS block (T/R variants: last write wins, as in the loader); for the
 // quality any row of the block counts, so an L3 in one variant is never hidden by another.
 // Known difference to v1: on the autumn clock change v2 keeps both 02:00-02:45 hours, v1 folds them
-// into one wall-clock row.
+// into one wall-clock row (so that day has 100 quarter hours in v2, 96 in v1).
 
 const (
 	billingCheckMaxPeriod = 367 * 24 * time.Hour // a billing period is at most one year
@@ -53,6 +54,8 @@ type BillingCheckMeter struct {
 	L3Days        []string `json:"l3Days"`
 	FirstData     *int64   `json:"firstData"`
 	LastData      *int64   `json:"lastData"`
+	MissingCount  int      `json:"missingCount"`
+	MissingDays   []string `json:"missingDays"`
 }
 
 type BillingCheckTotals struct {
@@ -106,6 +109,21 @@ type bcEntry struct {
 	from, to time.Time
 }
 
+// dayIndex is the number of local days from the day of base to the day of t.
+func dayIndex(base, t time.Time) int {
+	b, l := base.In(time.Local), t.In(time.Local)
+	bd := time.Date(b.Year(), b.Month(), b.Day(), 12, 0, 0, 0, time.UTC)
+	ld := time.Date(l.Year(), l.Month(), l.Day(), 12, 0, 0, 0, time.UTC)
+	return int(math.Round(ld.Sub(bd).Hours() / 24))
+}
+
+// quarterHoursOnDay counts the real quarter hours of a local day: 92, 96 or 100 at the clock changes.
+func quarterHoursOnDay(day time.Time) int {
+	start := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, time.Local)
+	next := time.Date(day.Year(), day.Month(), day.Day()+1, 0, 0, 0, 0, time.Local)
+	return int(next.Sub(start) / (15 * time.Minute))
+}
+
 // QueryBillingCheck evaluates the checks for (tenant, ec) and the requested entries.
 func (e *Engine) QueryBillingCheck(ctx context.Context, tenant, ec string, req *BillingCheckRequest) (*BillingCheckResponse, error) {
 	start, end := time.UnixMilli(req.Start), time.UnixMilli(req.End)
@@ -119,8 +137,12 @@ func (e *Engine) QueryBillingCheck(ctx context.Context, tenant, ec string, req *
 	}
 	for i, cp := range req.Cps {
 		res.Meters[i] = BillingCheckMeter{MeteringPoint: cp.MeteringPoint, Direction: cp.Direction,
-			ActiveSince: cp.ActiveSince, InactiveSince: cp.InactiveSince, L3Days: []string{}}
+			ActiveSince: cp.ActiveSince, InactiveSince: cp.InactiveSince, L3Days: []string{}, MissingDays: []string{}}
 	}
+	// quarter hours with a value per entry and day of the period
+	lastDay := dayIndex(periodStart, periodEnd)
+	present := make([][]int16, len(req.Cps))
+	defer res.countMissing(req, periodStart, lastDay, present)
 
 	cps, err := e.repo.ListByEC(ctx, tenant, ec)
 	if err != nil {
@@ -148,6 +170,7 @@ func (e *Engine) QueryBillingCheck(ctx context.Context, tenant, ec string, req *
 			to = time.Date(d.Year(), d.Month(), d.Day(), 23, 59, 59, 0, time.Local) // end of the inactive day
 		}
 		entries[p] = append(entries[p], bcEntry{idx: i, from: time.UnixMilli(cp.ActiveSince), to: to})
+		present[i] = make([]int16, lastDay+1)
 	}
 
 	rows, err := e.pool.Query(ctx, loadAllSlotsSQL, tenant, ec, periodStart, periodEnd)
@@ -163,7 +186,7 @@ func (e *Engine) QueryBillingCheck(ctx context.Context, tenant, ec string, req *
 	)
 	flush := func() {
 		for _, p := range touched {
-			res.addSlot(cps[p].Direction, &cells[p], currentTS, entries[p])
+			res.addSlot(cps[p].Direction, &cells[p], currentTS, entries[p], present, dayIndex(periodStart, currentTS))
 			cells[p] = [3]bcCell{}
 		}
 		touched = touched[:0]
@@ -211,7 +234,8 @@ func (e *Engine) QueryBillingCheck(ctx context.Context, tenant, ec string, req *
 	return res, nil
 }
 
-func (res *BillingCheckResponse) addSlot(dir counterpoint.Direction, cells *[3]bcCell, ts time.Time, entries []bcEntry) {
+func (res *BillingCheckResponse) addSlot(dir counterpoint.Direction, cells *[3]bcCell, ts time.Time, entries []bcEntry,
+	present [][]int16, day int) {
 	t := &res.Totals
 	if dir == counterpoint.DirectionProducer {
 		t.Produced += cells[0].value
@@ -238,12 +262,41 @@ func (res *BillingCheckResponse) addSlot(dir counterpoint.Direction, cells *[3]b
 				m.FirstData = &ms
 			}
 			m.LastData = &ms
+			if p := present[e.idx]; day >= 0 && day < len(p) {
+				p[day]++
+			}
 		}
 		if hasL3 {
 			m.L3Count += 1
 			day := ts.In(time.Local).Format("2006-01-02")
 			if len(m.L3Days) == 0 || m.L3Days[len(m.L3Days)-1] != day {
 				m.L3Days = append(m.L3Days, day)
+			}
+		}
+	}
+}
+
+// countMissing compares, per entry and local day of its active part of the period, the quarter hours
+// with a value with the real quarter hours of the day. Entries never matched count as all missing.
+func (res *BillingCheckResponse) countMissing(req *BillingCheckRequest, periodStart time.Time, lastDay int, present [][]int16) {
+	for i, cp := range req.Cps {
+		from, to := 0, lastDay
+		if cp.ActiveSince > 0 {
+			from = max(from, dayIndex(periodStart, time.UnixMilli(cp.ActiveSince)))
+		}
+		if cp.InactiveSince > 0 {
+			to = min(to, dayIndex(periodStart, time.UnixMilli(cp.InactiveSince)))
+		}
+		m := &res.Meters[i]
+		for d := from; d <= to; d++ {
+			day := periodStart.AddDate(0, 0, d)
+			expected, got := quarterHoursOnDay(day), 0
+			if present[i] != nil {
+				got = int(present[i][d])
+			}
+			if got < expected {
+				m.MissingCount += expected - got
+				m.MissingDays = append(m.MissingDays, day.Format("2006-01-02"))
 			}
 		}
 	}

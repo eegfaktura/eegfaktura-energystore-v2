@@ -206,3 +206,52 @@ func sameTime(ms *int64, t *time.Time) bool {
 	}
 	return *ms == t.UnixMilli()
 }
+
+// dayRows returns one consumer row per real quarter hour of the local day (92/96/100), except the
+// skipped ones.
+func dayRows(mock pgxmock.PgxPoolIface, day time.Time, skip int) *pgxmock.Rows {
+	rows := slotRows(mock)
+	start := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, time.Local)
+	next := time.Date(day.Year(), day.Month(), day.Day()+1, 0, 0, 0, 0, time.Local)
+	n := 0
+	for ts := start; ts.Before(next); ts = ts.Add(15 * time.Minute) {
+		n++
+		if n <= skip {
+			continue
+		}
+		rows.AddRow(ts, bcCons, "1-1:1.9.0 G.01", 1.0, int16(1))
+	}
+	return rows
+}
+
+func TestBillingCheck_MissingQuarterHours(t *testing.T) {
+	for _, tc := range []struct {
+		day     time.Time
+		skip    int
+		missing int
+	}{
+		{time.Date(2026, 2, 2, 0, 0, 0, 0, time.Local), 4, 4},
+		{time.Date(2026, 3, 29, 0, 0, 0, 0, time.Local), 0, 0},  // 92 quarter hours in Vienna
+		{time.Date(2026, 10, 25, 0, 0, 0, 0, time.Local), 0, 0}, // 100 quarter hours in Vienna
+	} {
+		eng, mock := newMockEngine(t)
+		bcMeta(mock)
+		end := time.Date(tc.day.Year(), tc.day.Month(), tc.day.Day(), 23, 45, 0, 0, time.Local)
+		expectSlots(mock, tc.day, end, dayRows(mock, tc.day, tc.skip))
+		res, err := eng.QueryBillingCheck(context.Background(), "vfeeg", "TE100200", &BillingCheckRequest{
+			Start: tc.day.UnixMilli(), End: tc.day.UnixMilli(),
+			Cps: []BillingCheckCp{bcConsumer(bcCons, 0, 0), bcConsumer("AT0030000000000000000000000000099", 0, 0)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		day := tc.day.Format("2006-01-02")
+		if m := res.Meters[0]; m.MissingCount != tc.missing || (tc.missing > 0) != (len(m.MissingDays) == 1) {
+			t.Errorf("%s: missing %d %v, want %d", day, m.MissingCount, m.MissingDays, tc.missing)
+		}
+		if m := res.Meters[1]; m.MissingCount != quarterHoursOnDay(tc.day) || len(m.MissingDays) != 1 || m.MissingDays[0] != day {
+			t.Errorf("%s: unknown metering point missing %d %v", day, m.MissingCount, m.MissingDays)
+		}
+		mock.Close()
+	}
+}
