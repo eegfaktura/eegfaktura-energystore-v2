@@ -11,12 +11,15 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/sha512"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +32,9 @@ const (
 	kcTestKid   = "test-kid"
 	kcTestKidEC = "test-kid-ec"
 	kcTestAud   = "at.ourproject.vfeeg.app"
+	// kcOtherAud is an aud that is not the clientID: accepted only in the
+	// SkipClientIDCheck variant.
+	kcOtherAud = "account"
 )
 
 func b64url(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
@@ -69,21 +75,27 @@ func newTestProvider(t *testing.T, rsaKey *rsa.PrivateKey, ecKey *ecdsa.PrivateK
 	return issuer
 }
 
+// signingInput builds header.payload of a token that is valid apart from
+// the signature.
+func signingInput(alg, kid, issuer, aud string) string {
+	h, _ := json.Marshal(map[string]string{"alg": alg, "typ": "JWT", "kid": kid})
+	now := time.Now()
+	p, _ := json.Marshal(map[string]any{
+		"iss": issuer, "aud": aud, "sub": "user-1",
+		"iat": now.Unix(), "exp": now.Add(5 * time.Minute).Unix(),
+		"tenant": []string{"RC100001"},
+	})
+	return b64url(h) + "." + b64url(p)
+}
+
 // signToken builds a compact JWS with alg; the kid follows the key type.
-func signToken(t *testing.T, alg string, key crypto.Signer, issuer string) string {
+func signToken(t *testing.T, alg string, key crypto.Signer, issuer, aud string) string {
 	t.Helper()
 	kid := kcTestKid
 	if _, ok := key.(*ecdsa.PrivateKey); ok {
 		kid = kcTestKidEC
 	}
-	h, _ := json.Marshal(map[string]string{"alg": alg, "typ": "JWT", "kid": kid})
-	now := time.Now()
-	p, _ := json.Marshal(map[string]any{
-		"iss": issuer, "aud": kcTestAud, "sub": "user-1",
-		"iat": now.Unix(), "exp": now.Add(5 * time.Minute).Unix(),
-		"tenant": []string{"RC100001"},
-	})
-	input := b64url(h) + "." + b64url(p)
+	input := signingInput(alg, kid, issuer, aud)
 	d256 := sha256.Sum256([]byte(input))
 	var sig []byte
 	var err error
@@ -111,10 +123,32 @@ func signToken(t *testing.T, alg string, key crypto.Signer, issuer string) strin
 	return input + "." + b64url(sig)
 }
 
+// signHS256 signs with HS256 and the given secret (key confusion: the
+// realm's public RSA key as HMAC secret).
+func signHS256(secret []byte, issuer, aud string) string {
+	input := signingInput("HS256", kcTestKid, issuer, aud)
+	m := hmac.New(sha256.New, secret)
+	m.Write([]byte(input))
+	return input + "." + b64url(m.Sum(nil))
+}
+
+// testVariants are the two verifier variants of NewKeycloakClient. tokenAud
+// differs from the clientID in the SkipClientIDCheck variant, so an accepted
+// RS256 token proves that branch.
+var testVariants = []struct {
+	name, audience, tokenAud string
+}{
+	{"with audience", kcTestAud, kcTestAud},
+	{"SkipClientIDCheck", "", kcOtherAud},
+}
+
 // Only RS256 is accepted (CLAUDE.md, Authentication), in both verifier
 // variants of NewKeycloakClient (with audience, and SkipClientIDCheck without
 // one), although the discovery advertises more algorithms. The error must be
 // go-jose's algorithm check, so a broken fixture cannot make a case pass.
+// Trade-off: the match is on go-jose's error text, so a go-jose upgrade that
+// rewords it fails this test (fix the constant then); it does not let a token
+// through.
 func TestNewKeycloakClient_OnlyRS256Accepted(t *testing.T) {
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -127,7 +161,6 @@ func TestNewKeycloakClient_OnlyRS256Accepted(t *testing.T) {
 	issuer := newTestProvider(t, rsaKey, ecKey)
 	ctx := context.Background()
 
-	variants := map[string]string{"with audience": kcTestAud, "SkipClientIDCheck": ""}
 	cases := []struct {
 		alg    string
 		key    crypto.Signer
@@ -139,14 +172,14 @@ func TestNewKeycloakClient_OnlyRS256Accepted(t *testing.T) {
 		{"ES256", ecKey, false},
 	}
 	const algErr = "unexpected signature algorithm"
-	for name, audience := range variants {
-		kc, err := NewKeycloakClient(ctx, issuer, kcTestAud, "", audience, nil)
+	for _, v := range testVariants {
+		kc, err := NewKeycloakClient(ctx, issuer, kcTestAud, "", v.audience, nil)
 		if err != nil {
-			t.Fatalf("%s: %v", name, err)
+			t.Fatalf("%s: %v", v.name, err)
 		}
 		for _, tc := range cases {
-			t.Run(name+"/"+tc.alg, func(t *testing.T) {
-				_, err := kc.Verify(ctx, signToken(t, tc.alg, tc.key, issuer))
+			t.Run(v.name+"/"+tc.alg, func(t *testing.T) {
+				_, err := kc.Verify(ctx, signToken(t, tc.alg, tc.key, issuer, v.tokenAud))
 				if tc.accept {
 					if err != nil {
 						t.Fatalf("expected accepted, got %v", err)
@@ -155,6 +188,46 @@ func TestNewKeycloakClient_OnlyRS256Accepted(t *testing.T) {
 				}
 				if err == nil || !strings.Contains(err.Error(), algErr) {
 					t.Fatalf("expected error containing %q, got %v", algErr, err)
+				}
+			})
+		}
+	}
+}
+
+// HS256 with the realm's public key as HMAC secret (key confusion) and
+// alg=none are rejected in both variants. Only an error is asserted here:
+// go-oidc/go-jose reject these at different stages (unsupported algorithm,
+// no matching key, malformed JWS) and the message differs between versions.
+func TestNewKeycloakClient_HS256AndNoneRejected(t *testing.T) {
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuer := newTestProvider(t, rsaKey, ecKey)
+	der, err := x509.MarshalPKIXPublicKey(&rsaKey.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pemKey := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
+	ctx := context.Background()
+	for _, v := range testVariants {
+		kc, err := NewKeycloakClient(ctx, issuer, kcTestAud, "", v.audience, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", v.name, err)
+		}
+		tokens := map[string]string{
+			"HS256 public key PEM": signHS256(pemKey, issuer, v.tokenAud),
+			"HS256 public key DER": signHS256(der, issuer, v.tokenAud),
+			"none":                 signingInput("none", kcTestKid, issuer, v.tokenAud) + ".",
+		}
+		for name, token := range tokens {
+			t.Run(v.name+"/"+name, func(t *testing.T) {
+				if _, err := kc.Verify(ctx, token); err == nil {
+					t.Fatal("expected rejection, got nil error")
 				}
 			})
 		}
