@@ -38,9 +38,12 @@ func NewKeycloakClient(ctx context.Context, issuer, clientID, clientSecret, audi
 	if err != nil {
 		return nil, fmt.Errorf("auth: oidc discovery %s: %w", issuer, err)
 	}
-	oidcCfg := &oidc.Config{ClientID: audience}
+	// RS256 only (CLAUDE.md, Authentication): without SupportedSigningAlgs
+	// go-oidc accepts every algorithm the discovery advertises except HS*/none.
+	rs256 := []string{oidc.RS256}
+	oidcCfg := &oidc.Config{ClientID: audience, SupportedSigningAlgs: rs256}
 	if audience == "" {
-		oidcCfg = &oidc.Config{ClientID: clientID, SkipClientIDCheck: true}
+		oidcCfg = &oidc.Config{ClientID: clientID, SkipClientIDCheck: true, SupportedSigningAlgs: rs256}
 	}
 	return &KeycloakClient{
 		provider:     p,
