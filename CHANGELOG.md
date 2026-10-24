@@ -19,6 +19,15 @@ operations.
   clock change v2 keeps both 02:00–02:45 hours. No schema change.
 
 ### Security
+- **Bearer tokens: RS256 only** (platform#191, as backend#99). The go-oidc verifier of `NewKeycloakClient` took
+  the allowed signing algorithms from the Keycloak discovery (HS* and `none` were already dropped); both variants
+  (with `ESV2_AUTH_*_AUDIENCE`, and `SkipClientIDCheck` without) now accept RS256 only. A token signed with
+  RS384/RS512/PS*/ES*/EdDSA under a realm key is rejected with 403 (`ProtectApp`, GraphQL; for `ProtectAPI` this is
+  the id_token of the password grant, which the service fetches itself). Logins would not be affected: as of 2026-10-23
+  the public JWKS of Prod/Pilot (login.eegfaktura.at) and Dev hold exactly one signing key (RS256), and the realm
+  sets no different ID-token algorithm. If a realm ever got an active non-RS256 signing key (e.g. on key rotation),
+  logins would fail with 403. Tests also cover HS256 signed with the realm's public key (PEM and DER) and
+  `alg=none` (rejected) and, in the `SkipClientIDCheck` variant, a token whose `aud` is not the client ID.
 - `github.com/xuri/excelize/v2` 2.10.1 -> 2.11.0, closing CVE-2026-54063 (CVSS 7.5).
   The library backs both the XLSX import and the Excel export, so it processes files
   supplied from outside. Full test suite green, including `internal/xlsximport` and
