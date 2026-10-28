@@ -34,6 +34,10 @@ operations.
   `internal/excelexport`. The `go` directive is unchanged.
 
 ### Fixed
+- **CI: the Snyk Code scan fails visibly when it cannot run.** An invalid `SNYK_TOKEN` ended the weekly and
+  push scan green without any result (`continue-on-error`); now only „issues found“ keeps the run green (the
+  issues go to Code Scanning), an authentication or tool error fails it. The Snyk CLI is pinned to 1.1308.1
+  instead of the latest version.
 - Raw-data query returned each timestamp multiple times for a re-registered
   metering point (same root cause as v1). When a metering point was
   deregistered from one member and re-registered under another, the old
