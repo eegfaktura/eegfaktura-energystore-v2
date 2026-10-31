@@ -28,6 +28,12 @@ operations.
   sets no different ID-token algorithm. If a realm ever got an active non-RS256 signing key (e.g. on key rotation),
   logins would fail with 403. Tests also cover HS256 signed with the realm's public key (PEM and DER) and
   `alg=none` (rejected) and, in the `SkipClientIDCheck` variant, a token whose `aud` is not the client ID.
+- `github.com/xuri/excelize/v2` 2.11.0 -> `v2.11.1-0.20261003002531-6258dcebc4e2`, a temporary pin to the upstream
+  commit of 2026-10-03 until v2.12.0 is released, closing the 15 open Dependabot alerts on excelize (#16–#30, 9 high
+  and 6 medium; the same pin as energystore#103). Updated with it: `mscfb`, `efp` and `golang.org/x/{crypto,net,sync,sys,text,image}`.
+  The `go` directive reads `1.26.0` instead of `1.26`, which is the same toolchain line (excelize requires ≥ 1.26.0).
+  Excel export: the cell values are unchanged, because all floats were already rounded to 6 decimals. Malformed
+  workbooks with a row number above Excel's limit are now cut off earlier on import, which drops the row before it.
 - `github.com/xuri/excelize/v2` 2.10.1 -> 2.11.0, closing CVE-2026-54063 (CVSS 7.5).
   The library backs both the XLSX import and the Excel export, so it processes files
   supplied from outside. Full test suite green, including `internal/xlsximport` and
